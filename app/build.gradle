@@ -1,0 +1,35 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "com.vone.qrcode"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.vone.qrcode"
+        minSdk 19
+        targetSdk 34
+        versionCode 2
+        versionName "1.1-custom"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'com.google.zxing:core:3.5.2'
+    implementation 'com.squareup.okhttp3:okhttp:3.12.13'
+    implementation 'com.squareup.okio:okio:1.17.5'
+}
