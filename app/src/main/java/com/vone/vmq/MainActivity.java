@@ -97,6 +97,8 @@ public class MainActivity extends AppCompatActivity{
 
         Toast.makeText(MainActivity.this, "v免签开源免费免签系统 v1.8.1", Toast.LENGTH_SHORT).show();
 
+        createChannel(); // [定制] 启动即创建通知渠道
+
 
     }
 
@@ -165,11 +167,27 @@ public class MainActivity extends AppCompatActivity{
                 editor.putString("host", host);
                 editor.putString("key", key);
                 editor.commit();
+                isOk = true; // [定制] 手动配置保存即已配置
 
             }
         });
         builder.show();
 
+    }
+    //[定制] 创建通知渠道（否则系统里"允许通知"开关为灰）
+    private void createChannel() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                NotificationChannel channel = new NotificationChannel("1", "Channel1", NotificationManager.IMPORTANCE_HIGH);
+                channel.enableLights(true);
+                channel.setLightColor(Color.GREEN);
+                channel.setShowBadge(true);
+                nm.createNotificationChannel(channel);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
     //开启通知使用权
     public void openNotifyAccess(View v) {
@@ -386,6 +404,7 @@ public class MainActivity extends AppCompatActivity{
             editor.putString("host", host);
             editor.putString("key", key);
             editor.commit();
+            isOk = true; // [定制] 保存即视为已配置
 
         }
     }
