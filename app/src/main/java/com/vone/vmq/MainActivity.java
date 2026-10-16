@@ -110,12 +110,6 @@ public class MainActivity extends AppCompatActivity{
             ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.CAMERA}, Constant.REQ_PERM_CAMERA);
             return;
         }
-        // 申请文件读写权限（部分朋友遇到相册选图需要读写权限的情况，这里一并写一下）
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            // 申请权限
-            ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, Constant.REQ_PERM_EXTERNAL_STORAGE);
-            return;
-        }
         // 二维码扫码
         Intent intent = new Intent(MainActivity.this, CaptureActivity.class);
         startActivityForResult(intent, Constant.REQ_QR_CODE);
@@ -176,6 +170,23 @@ public class MainActivity extends AppCompatActivity{
         });
         builder.show();
 
+    }
+    //开启通知使用权
+    public void openNotifyAccess(View v) {
+        if (gotoNotificationAccessSetting()) {
+            Toast.makeText(MainActivity.this, "请在列表中找到「V免签监控端」并打开", Toast.LENGTH_LONG).show();
+        }
+    }
+    //打开本应用权限设置页
+    public void openAppSettings(View v) {
+        try {
+            Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.parse("package:" + getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            Toast.makeText(MainActivity.this, "请手动到：设置-应用-V免签监控端-权限", Toast.LENGTH_LONG).show();
+        }
     }
     //检测心跳
     public void doStart(View view) {

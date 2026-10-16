@@ -45,6 +45,20 @@
         android:onClick="doInput"
         android:text="手动配置" />
     <Button
+        android:id="@+id/btn_notify"
+        android:layout_width="fill_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:onClick="openNotifyAccess"
+        android:text="开启通知使用权" />
+    <Button
+        android:id="@+id/btn_appperm"
+        android:layout_width="fill_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:onClick="openAppSettings"
+        android:text="应用权限设置" />
+    <Button
         android:id="@+id/btn_start"
         android:layout_width="fill_parent"
         android:layout_height="wrap_content"
