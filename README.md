@@ -1,68 +1,90 @@
-# V免签监控端 · 定制版（vmq-monitor-custom）
+# V免签监控端 · 秒囤兔定制版
 
-> 本项目基于开源项目 **V免签监控端（[szvone/vmqApk](https://github.com/szvone/vmqApk)）** 二次开发，
-> 用于配合 **[szvone/vmqphp](https://github.com/szvone/vmqphp)**（V免签 PHP 服务端）实现个人微信/支付宝收款的通知监听与上报。
->
-> **原作者**：szvone（[https://github.com/szvone](https://github.com/szvone)）
-> **原项目协议**：MIT License（见 [LICENSE](LICENSE)）。本仓库同样以 **MIT** 发布，并保留原作者的版权声明与许可。
->
-> 本项目仅供**个人学习与测试**使用，请勿用于任何非法用途；商用请申请官方商户接口。
+> 一款基于 [V免签](https://github.com/szvone/vmqphp) 的 Android 收款监听（回调）应用。
+> 无需 Root，通过监听微信 / 支付宝的到账通知，把收款金额实时回调给 V免签服务端。
 
 ---
 
-## 为什么做这个定制版
+## 一、开源协议与署名（Attribution）
 
-原版监控端对手机「通知条幅」的解析规则较旧，在**新版微信/支付宝**上容易**漏听收款通知**（表现为：实际已收款，但服务端没有收到推送 → 订单不自动完成，需要人工补单）。常见原因：
+本项目为**二次开发（Derivative Work）**，遵循上游开源协议，特此致谢：
 
-1. **支付宝**：原版只检查通知 **content（内容）** 是否含 `通过扫码向你付款` / `成功收款`；新版支付宝常把关键字放在 **title（标题）**，导致直接不进分支 → 漏推。
-2. **微信**：原版要求 **title 严格等于** `微信支付` / `微信收款助手` / `微信收款商业版`；标题稍有变化就不匹配 → 漏推。
-3. **金额提取**：原版 `getMoney()` 是「取最后一个数字串」，遇到日期/时间/单号混排时可能取错。
-4. **无去重 / 无过滤**：同一笔可能重复推送；营销/退款等无关条幅也可能被当成收款。
+| 角色 | 项目 | 协议 | 说明 |
+|---|---|---|---|
+| **原作者** | [szvone/vmqApk](https://github.com/szvone/vmqApk) | MIT | V免签监控端原始实现（本项目的基础） |
+| **保活与解析参考** | [shinian-a/Vmq-App](https://github.com/shinian-a/Vmq-App) | Apache-2.0 | 后台保活体系与通知解析规则的参考实现 |
+| **定制方** | 秒囤兔（rainbow-boy-max） | Apache-2.0 | 本仓库的定制改动（见下文「定制内容」） |
 
-## 本定制版的改动
+- 本项目整体以 **Apache License 2.0** 发布（见 [LICENSE](LICENSE)）。
+- 源自 `shinian-a/Vmq-App`（Apache-2.0）的代码部分，已保留其版权与协议声明。
+- 源自 `szvone/vmqApk`（MIT）的代码部分，已保留原作者署名。
 
-- **支付宝**：**title + content 双查**，收款关键字集合扩充。
-- **微信**：title 由「全等」改为「**包含**」，关键字集合扩展；内容命中收款关键字亦可。
-- **金额提取**：优先解析 `¥/￥` 或 `元` 附近的金额；回退取数字串；统一 **2 位小数**。
-- **去重**：同一 `(渠道, 金额)` 在 **15 秒**内只推送一次。
-- **无效条幅过滤**：`退款/退回/撤销/失败/转出/支出/账单/优惠/活动/红包` 等一律忽略。
-- 构建现代化：**AndroidX + AGP 8.1 + Gradle 8.2**（原项目使用已停服的 jcenter，无法直接构建）。
+---
 
-## 构建
+## 二、定制内容（相对原版 szvone/vmqApk）
 
-本仓库自带 GitHub Actions 工作流（`.github/workflows/build-apk.yml`），推送到 `main`/`master` 或手动触发即可产出 APK：
+### 1. 保活体系（根治「锁屏后漏听」）
+原版仅有 `WakeLock + 心跳线程`，极易被系统回收，导致锁屏 / 后台一段时间后**漏听通知**。本定制版移植并整合了一整套保活方案：
 
-```
-Actions → Build APK → Run workflow
-```
+- **前台常驻服务** `ForeService`
+- **双进程守护** `DaemonService`（`:daemon_service`）+ `NativeDaemonService`（`:native_daemon`）
+- **JobScheduler** 周期唤醒 `AliveJobService`（15 分钟，重启后仍有效）
+- **账号同步保活** `SyncManager` + `SyncAdapter` + `AccountAuthenticator`（系统每 15 分钟唤醒一次）
+- **1 像素 Activity** `SinglePixelActivity`（锁屏时抬高进程优先级）
+- **开机自启** `BootReceiver`（`BOOT_COMPLETED`）
+- **一键保活按钮**：申请「忽略电池优化」白名单 + 跳转各厂商「自启动」设置页
 
-产物：`app/build/outputs/apk/release/app-release.apk`（以 **debug 签名** 打包，可直接安装；如需上架请替换为你自己的签名）。
+### 2. 通知解析规则升级（减少「漏推 / 取错金额」）
+- **微信**：标题由「全等」放宽为「全等或包含」，标题集合扩充（含企业微信）；要求内容含「收款」且非「已支付」。
+- **支付宝**：区分「普通收款 / 店员通」两类；金额 **title 优先 → content 回退**，并重试一次防掉单。
+- **金额提取**：先定位关键词（收款 / 付款 / 到账 / 转入）→ 正则匹配 → 合法性 + 金额范围（0.01 ~ 999999.99）校验。
+- **无效条幅过滤**：退款 / 撤销 / 退回 等一律忽略。
+- **去重**：同 (类型, 金额) 15 秒内只推送一次。
+- **补回调**：推送失败自动延迟 1 秒重试；回调成功自动清除对应通知（防通知栏堆积）。
 
-本地构建（需 JDK 17 + Android SDK）：
+### 3. 自检与排障
+- 新增**实时监听日志面板**（最近 20 条），心跳状态 / 匹配结果 / 回调状态一目了然。
+- 「检测心跳」「检测监听」按钮，快速验证配置与权限。
 
-```bash
-./gradlew assembleRelease
-```
+### 4. 易用性与兼容性
+- **启动即创建通知渠道**：否则系统「通知管理」开关为灰色不可点。
+- **扫码 / 手动配置保存后立即视为「已配置」**：原版把 `isOk` 写在心跳成功回调里，心跳失败即永远提示「未配置」。
+- 新增「**开启通知使用权**」「**应用权限设置**」引导按钮。
+- 声明 `usesCleartextTraffic="true"`：V免签服务端通常为 `http://`，Android 9+ 默认禁明文会直接导致推送失败。
 
-## 使用
+---
 
-1. 安装 APK → 打开 → 填写**服务端地址**（你的 V免签服务端域名/IP）与**通讯密钥**（服务端后台「监控端设置」里的那串）。
-2. 按提示开启**通知使用权**（NotificationListenerService），并加入系统**省电/内存白名单**、关闭「神隐模式」/「勿扰」。
-3. 微信关注「**微信收款助手**」、支付宝开启「**支付助手**」的收款提醒，保证能收到到账条幅。
-4. 服务端后台显示「**监控端在线**」即正常。
+## 三、使用方法
 
-## 目录结构
+1. 安装 APK（本页顶部下载）。
+2. 打开 App → **扫码配置**（扫描 V免签后台首页的配置二维码）或**手动配置**（粘贴后台「配置数据」，形如 `your-domain.com/通讯密钥`）。
+3. 依次点击：
+   - **开启通知使用权** → 在系统列表中找到「V免签监控端」并打开；
+   - **应用权限设置** → 授予「通知」等权限；
+   - **一键保活** → 允许「忽略电池优化」，并在手机管家中允许「自启动 / 后台运行」。
+4. 点击「**检测心跳**」验证与服务器的连通性；点击「**检测监听**」验证监听权限。
+5. 用真实收款（建议使用唯一金额，如 `0.13`）复测，观察 App 内「监听日志」与服务端订单状态。
 
-```
-app/src/main/java/com/vone/vmq/NeNotificationService2.java   通知监听与解析（核心改动）
-app/src/main/java/com/vone/vmq/MainActivity.java             配置界面
-app/src/main/java/com/google/zxing/...                       扫码（zxing，原样保留）
-```
+---
 
-## 许可与致谢
+## 四、构建
 
-- 原项目：**V免签监控端** © szvone，MIT License。
-- 服务端：**[szvone/vmqphp](https://github.com/szvone/vmqphp)** © szvone，MIT License。
-- 本定制版由 **rainbow-boy-max** 在原作者基础上做兼容性增强，同样以 MIT 发布；请保留以上声明。
+本项目通过 **GitHub Actions** 自动构建（`JDK 17 + Android SDK 34`）。
+工作流：`.github/workflows/build-apk.yml`，产物为 `app-release.apk`。
 
-> 免责声明：本项目为个人免签收款方案，资金直接进入个人收款账户，存在合规与风控风险；请自行评估并承担使用后果，切勿用于非法用途。
+签名密钥通过 GitHub Secrets 注入（`ANDROID_KEYSTORE_B64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD`），保证**多次构建签名一致**，升级无需卸载。
+
+---
+
+## 五、免责声明
+
+本项目仅供学习与技术研究使用。请遵守当地法律法规及微信 / 支付宝的服务协议，因使用本项目产生的一切后果由使用者自行承担。
+
+---
+
+## 六、致谢
+
+- [szvone](https://github.com/szvone) —— V免签 / vmqApk 原作者
+- [shinian-a](https://github.com/shinian-a) —— Vmq-App 保活与解析实现
+
+**License: Apache-2.0**

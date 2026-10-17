@@ -1,0 +1,34 @@
+V免签监控端 · 秒囤兔定制版
+Copyright 2026 rainbow-boy-max (秒囤兔)
+
+This product is a derivative work and includes software developed by
+third parties. The following attributions are provided in accordance
+with the Apache License, Version 2.0, Section 4(d).
+
+====================================================================
+1. szvone/vmqApk  (License: MIT)
+   https://github.com/szvone/vmqApk
+   Original author of the V免签 (Vmq) Android monitor client.
+   Portions of the notification-listening logic and app structure are
+   derived from this project.
+   Copyright (c) szvone
+====================================================================
+2. shinian-a/Vmq-App  (License: Apache-2.0)
+   https://github.com/shinian-a/Vmq-App
+   Reference implementation of the background keep-alive subsystem
+   (ForeService / DaemonService / NativeDaemonService / AliveJobService /
+   SyncAdapter / AccountAuthenticator / SinglePixelActivity / ScreenReceiverUtil)
+   and of the notification parsing rules (WeChat / Alipay amount extraction).
+   Copyright (c) shinian-a
+====================================================================
+3. ZXing (com.google.zxing)  (License: Apache-2.0)
+   QR-code scanning components.
+   Copyright (c) ZXing Authors
+====================================================================
+4. AndroidX / OkHttp  (License: Apache-2.0)
+   Copyright (c) The Android Open Source Project / Square, Inc.
+====================================================================
+
+The MIT-licensed portions remain under the MIT License (see LICENSE-MIT).
+All other portions of this project are licensed under the Apache License,
+Version 2.0 (see LICENSE).

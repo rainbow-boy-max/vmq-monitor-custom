@@ -4,23 +4,34 @@ import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Message;
 import android.os.PowerManager;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
-import androidx.core.app.NotificationCompat;
 import android.text.TextUtils;
 import android.util.Log;
 import android.widget.Toast;
 
+import androidx.core.app.NotificationCompat;
+
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -31,46 +42,61 @@ import okhttp3.Request;
 import okhttp3.Response;
 
 /**
- * V免签监控端 · 定制版（解析规则增强）
+ * V免签监控端 · 秒囤兔定制版 v2.0（解析规则全面升级）
  *
  * 相对原版（szvone/vmqApk）的改动：
- *  1. 支付宝：title + content 双查，关键字扩充（原版只查 content，新版支付宝常把关键字放标题 → 漏单）
- *  2. 微信：title 由「全等」改为「包含」，关键字集合扩展
- *  3. getMoney：优先解析 ￥/¥/元 附近的金额，回退取数字串；统一 2 位小数
- *  4. 去重：同一 (type, 金额) 在 15 秒内只推送一次
- *  5. 无效条幅过滤：退款/撤销/失败/退回 等一律忽略
+ *  1. 微信：标题由「全等」放宽为「全等或包含」，标题集合扩充（含企业微信）
+ *  2. 支付宝：区分「普通收款 / 店员通」，金额 title 优先 → content 回退，并重试一次防掉单
+ *  3. getMoney：先定位关键词（收款/付款/到账/转入）→ 正则 → 合法性与金额范围校验
+ *  4. 无效条幅过滤（退款/撤销/退回 等）
+ *  5. 同 (类型,金额) 15 秒内去重，避免重复推送
+ *  6. 推送失败自动补回调；回调成功自动清除对应通知（防通知栏堆积）
+ *  7. 实时监听日志面板，便于自检排障
+ *
+ * 解析与保活设计参考 shinian-a/Vmq-App（Apache-2.0）。
  */
 public class NeNotificationService2 extends NotificationListenerService {
-    private String TAG = "NeNotificationService2";
+
+    private static final String TAG = "NeNotificationService2";
+
     private String host = "";
     private String key = "";
     private Thread newThread = null;
     private PowerManager.WakeLock mWakeLock = null;
+    private OkHttpClient okHttpClient;
+    private Handler mainHandler;
 
-    // 支付宝收款关键字（title 或 content 命中即可）
-    private static final String[] ALIPAY_KEYS = {
-            "通过扫码向你付款", "成功收款", "收款到账", "向你付款", "收款成功", "到账提醒", "收款"
-    };
-    // 微信收款标题（包含匹配）
-    private static final String[] WX_TITLES = {
-            "微信支付", "微信收款助手", "微信收款商业版", "微信收款", "收款到账", "微信支付收款"
-    };
-    // 微信收款内容关键字
-    private static final String[] WX_KEYS = {
-            "收款", "到账", "已存入零钱", "已到账"
-    };
-    // 无效条幅（命中即忽略）
-    private static final String[] NEG_KEYS = {
-            "退款", "退回", "撤销", "失败", "转出", "支出", "账单", "优惠", "活动", "红包"
+    // 支付平台包名
+    private static final String PACKAGE_WECHAT = "com.tencent.mm";
+    private static final String PACKAGE_WECHAT_WORK = "com.tencent.wework";
+    private static final String PACKAGE_ALIPAY = "com.eg.android.AlipayGphone";
+    private static final String PACKAGE_SELF = "com.vone.qrcode";
+
+    // 微信支付标题关键字
+    private static final String[] WECHAT_PAY_TITLES = {
+            "微信支付", "微信收款助手", "微信收款商业版", "对外收款", "企业微信", "Weixin Cashier Assistant",
+            "微信收款", "微信支付收款", "收款到账", "微信收款小账本"
     };
 
-    private static long lastPushMs = 0L;
+    // 无效条幅关键字（命中即忽略）
+    private static final String[] NEGATIVE_KEYS = {
+            "退款", "已退回", "退回", "撤销", "交易失败", "已关闭"
+    };
+
+    // 金额提取正则（预编译）
+    private static final Pattern MONEY_PATTERN = Pattern.compile("\\d+(?:\\.\\d+)?");
+
+    // 去重
     private static String lastPushKey = "";
+    private static long lastPushMs = 0L;
+
+    // ==================== 心跳 ====================
 
     @SuppressLint("InvalidWakeLockTag")
     public void acquireWakeLock(Context context) {
         if (null == mWakeLock) {
             PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (pm == null) return;
             mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE, "WakeLock");
             if (null != mWakeLock) {
                 mWakeLock.acquire();
@@ -85,38 +111,49 @@ public class NeNotificationService2 extends NotificationListenerService {
         }
     }
 
-    // 心跳进程
     public void initAppHeart() {
         Log.d(TAG, "开始启动心跳线程");
         if (newThread != null) {
             return;
         }
         acquireWakeLock(this);
+        if (okHttpClient == null) {
+            okHttpClient = new OkHttpClient.Builder()
+                    .connectTimeout(10, TimeUnit.SECONDS)
+                    .readTimeout(30, TimeUnit.SECONDS)
+                    .build();
+        }
+
         newThread = new Thread(new Runnable() {
             @Override
             public void run() {
                 Log.d(TAG, "心跳线程启动！");
                 while (true) {
-                    SharedPreferences read = getSharedPreferences("vone", MODE_PRIVATE);
-                    host = read.getString("host", "");
-                    key = read.getString("key", "");
+                    SharedPreferences read = getSharedPreferences(AppConstants.SP_NAME_CONFIG, MODE_PRIVATE);
+                    host = read.getString(AppConstants.SP_KEY_HOST, "");
+                    key = read.getString(AppConstants.SP_KEY_KEY, "");
 
                     String t = String.valueOf(new Date().getTime());
                     String sign = md5(t + key);
-
-                    OkHttpClient okHttpClient = new OkHttpClient();
-                    Request request = new Request.Builder().url("http://" + host + "/appHeart?t=" + t + "&sign=" + sign).method("GET", null).build();
+                    Request request = new Request.Builder()
+                            .url("http://" + host + "/appHeart?t=" + t + "&sign=" + sign)
+                            .method("GET", null)
+                            .build();
                     Call call = okHttpClient.newCall(request);
                     call.enqueue(new Callback() {
                         @Override
                         public void onFailure(Call call, IOException e) {
                             final String error = e.getMessage();
-                            Handler handlerThree = new Handler(Looper.getMainLooper());
-                            handlerThree.post(new Runnable() {
-                                public void run() {
-                                    Toast.makeText(getApplicationContext(), "心跳状态错误，请检查配置是否正确!" + error, Toast.LENGTH_LONG).show();
-                                }
-                            });
+                            if (mainHandler != null) {
+                                mainHandler.post(new Runnable() {
+                                    public void run() {
+                                        if (MainActivity.LogsTextView != null
+                                                && !MainActivity.LogsTextView.getText().toString().contains("心跳状态错误")) {
+                                            sendMonitorLogs(timeStamp() + "\r\r\r\r" + "心跳状态错误，请重新配置或切换网络环境! 错误：" + error);
+                                        }
+                                    }
+                                });
+                            }
                         }
 
                         @Override
@@ -124,6 +161,7 @@ public class NeNotificationService2 extends NotificationListenerService {
                             Log.d(TAG, "onResponse heard: " + response.body().string());
                         }
                     });
+
                     try {
                         Thread.sleep(30 * 1000);
                     } catch (InterruptedException e) {
@@ -135,62 +173,44 @@ public class NeNotificationService2 extends NotificationListenerService {
         newThread.start();
     }
 
+    // ==================== 通知回调 ====================
+
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
-        Log.d(TAG, "接受到通知消息");
-        SharedPreferences read = getSharedPreferences("vone", MODE_PRIVATE);
-        host = read.getString("host", "");
-        key = read.getString("key", "");
+        if (mainHandler == null) {
+            mainHandler = new Handler(Looper.getMainLooper());
+        }
+        SharedPreferences read = getSharedPreferences(AppConstants.SP_NAME_CONFIG, MODE_PRIVATE);
+        host = read.getString(AppConstants.SP_KEY_HOST, "");
+        key = read.getString(AppConstants.SP_KEY_KEY, "");
 
         Notification notification = sbn.getNotification();
         String pkg = sbn.getPackageName();
-        if (notification != null) {
-            Bundle extras = notification.extras;
-            if (extras != null) {
-                String title = extras.getString(NotificationCompat.EXTRA_TITLE, "");
-                String content = extras.getString(NotificationCompat.EXTRA_TEXT, "");
-                String all = (title == null ? "" : title) + " " + (content == null ? "" : content);
-                Log.d(TAG, "**********************");
-                Log.d(TAG, "包名:" + pkg);
-                Log.d(TAG, "标题:" + title);
-                Log.d(TAG, "内容:" + content);
-                Log.d(TAG, "**********************");
+        if (notification == null) {
+            return;
+        }
+        Bundle extras = notification.extras;
+        if (extras == null) {
+            return;
+        }
 
-                // 无效条幅过滤
-                if (containsAny(all, NEG_KEYS)) {
-                    Log.d(TAG, "忽略：命中无效关键字");
-                    return;
-                }
+        String title = extras.getString(NotificationCompat.EXTRA_TITLE, "");
+        String content = extras.getString(NotificationCompat.EXTRA_TEXT, "");
+        Log.d(TAG, "包名: " + pkg + " | 标题: " + title + " | 内容: " + content);
 
-                if (pkg.equals("com.eg.android.AlipayGphone")) {
-                    // 支付宝：title + content 双查
-                    if (containsAny(all, ALIPAY_KEYS)) {
-                        String money = getMoney(content, title);
-                        if (money != null) {
-                            Log.d(TAG, "匹配成功： 支付宝 到账 " + money);
-                            appPush(2, Double.valueOf(money));
-                        } else {
-                            toast("监听到支付宝消息但未匹配到金额！");
-                        }
-                    }
-                } else if (pkg.equals("com.tencent.mm")) {
-                    // 微信：title 包含匹配（扩展），或内容命中收款关键字
-                    boolean titleHit = containsAny(title, WX_TITLES);
-                    if (titleHit || containsAny(all, WX_KEYS)) {
-                        String money = getMoney(content, title);
-                        if (money != null) {
-                            Log.d(TAG, "匹配成功： 微信到账 " + money);
-                            appPush(1, Double.valueOf(money));
-                        } else {
-                            toast("监听到微信消息但未匹配到金额！");
-                        }
-                    }
-                } else if (pkg.equals("com.vone.qrcode")) {
-                    if ("这是一条测试推送信息，如果程序正常，则会提示监听权限正常".equals(content)) {
-                        toast("监听正常，如无法正常回调请联系作者反馈！");
-                    }
-                }
-            }
+        // 无效条幅过滤
+        String all = (title == null ? "" : title) + " " + (content == null ? "" : content);
+        if (containsAny(all, NEGATIVE_KEYS)) {
+            Log.d(TAG, "忽略：命中无效条幅关键字");
+            return;
+        }
+
+        if (PACKAGE_WECHAT.equals(pkg) || PACKAGE_WECHAT_WORK.equals(pkg)) {
+            handleWechatNotification(title, content);
+        } else if (PACKAGE_ALIPAY.equals(pkg)) {
+            handleAlipayNotification(title, content);
+        } else if (PACKAGE_SELF.equals(pkg)) {
+            handleSelfTestNotification(content);
         }
     }
 
@@ -198,15 +218,354 @@ public class NeNotificationService2 extends NotificationListenerService {
     public void onNotificationRemoved(StatusBarNotification sbn) {
     }
 
-    @Override
-    public void onListenerConnected() {
-        initAppHeart();
-        toast("监听服务开启成功！");
+    // ==================== 微信解析 ====================
+
+    private void handleWechatNotification(String title, String content) {
+        if (TextUtils.isEmpty(title) && TextUtils.isEmpty(content)) return;
+
+        // 标题命中（全等 或 包含）
+        boolean isPayTitle = false;
+        for (String payTitle : WECHAT_PAY_TITLES) {
+            if (payTitle.equals(title) || (!TextUtils.isEmpty(title) && title.contains(payTitle))) {
+                isPayTitle = true;
+                break;
+            }
+        }
+        if (!isPayTitle) return;
+
+        // 必须含「收款」，且排除「已支付」等无效
+        if (!content.contains("收款") || content.contains("已支付")) return;
+
+        String money = getMoney(content);
+        if (money == null || money.isEmpty()) {
+            money = getMoney(title);
+        }
+
+        if (money != null && !money.isEmpty()) {
+            try {
+                double amount = Double.parseDouble(money);
+                toast("匹配成功：微信到账" + money + "元");
+                Log.d(TAG, "匹配成功：微信到账 " + money + "元");
+                appPush(AppConstants.PAY_TYPE_WECHAT, amount);
+            } catch (NumberFormatException e) {
+                Log.e(TAG, "解析微信金额失败：" + money, e);
+                showMoneyParseErrorToast("微信");
+            }
+        } else {
+            showMoneyParseErrorToast("微信");
+        }
     }
 
+    // ==================== 支付宝解析 ====================
+
+    private void handleAlipayNotification(String title, String content) {
+        if (TextUtils.isEmpty(title) && TextUtils.isEmpty(content)) return;
+
+        String money;
+        String platform;
+        int platformType = AppConstants.PAY_TYPE_ALIPAY;
+
+        boolean isNormalPay = (title.contains("成功收款") && content.contains("已转入余额"))
+                || content.contains("通过扫码向你付款");
+        boolean isStaffPay = title.contains("店员通") || content.contains("支付宝成功收款");
+
+        if (isNormalPay) {
+            platform = "支付宝";
+            money = getMoney(title);
+            if (money == null || money.isEmpty()) {
+                money = getMoney(content);
+            }
+        } else if (isStaffPay) {
+            platform = "支付宝店员";
+            money = getMoney(content);
+            if (money == null || money.isEmpty()) {
+                money = getMoney(title);
+            }
+        } else {
+            return; // 非收款类型
+        }
+
+        // 重试一次防掉单
+        if (money == null || money.isEmpty()) {
+            money = isNormalPay ? getMoney(content) : getMoney(title);
+        }
+
+        if (money != null && !money.isEmpty()) {
+            try {
+                double amount = Double.parseDouble(money);
+                toast("匹配成功：" + platform + "到账" + money + "元");
+                Log.d(TAG, "匹配成功：" + platform + "到账 " + money + "元");
+                appPush(platformType, amount);
+            } catch (NumberFormatException e) {
+                Log.e(TAG, "解析" + platform + "金额失败：" + money, e);
+                showMoneyParseErrorToast(platform);
+            }
+        } else {
+            showMoneyParseErrorToast(platform);
+        }
+    }
+
+    // ==================== 自检 ====================
+
+    private void handleSelfTestNotification(String content) {
+        if (content != null && (content.contains("如果程序正常") || content.contains("测试推送"))) {
+            sendMonitorLogs(timeStamp() + "\r\r\r\r" + "测试收款监听权限正常！");
+            toast("监听正常，如无法正常回调请联系管理员反馈！");
+        }
+    }
+
+    private void showMoneyParseErrorToast(String platform) {
+        if (mainHandler == null) {
+            mainHandler = new Handler(Looper.getMainLooper());
+        }
+        sendMonitorLogs(timeStamp() + "\r\r\r\r" + "监听到" + platform + "收款消息但未匹配到金额！");
+        mainHandler.post(new Runnable() {
+            public void run() {
+                Toast.makeText(getApplicationContext(), "监听到收款消息但未匹配到金额！", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    // ==================== 推送 ====================
+
+    public void appPush(final int type, final double price) {
+        SharedPreferences read = getSharedPreferences(AppConstants.SP_NAME_CONFIG, MODE_PRIVATE);
+        host = read.getString(AppConstants.SP_KEY_HOST, "");
+        key = read.getString(AppConstants.SP_KEY_KEY, "");
+
+        final String priceStr = String.format(java.util.Locale.US, "%.2f", price);
+
+        // 去重：同一 (type, 金额) 15 秒内只推一次
+        String dedupKey = type + ":" + priceStr;
+        long now = System.currentTimeMillis();
+        if (dedupKey.equals(lastPushKey) && (now - lastPushMs) < AppConstants.DEDUP_WINDOW_MS) {
+            Log.d(TAG, "去重：跳过重复推送 " + dedupKey);
+            return;
+        }
+        lastPushKey = dedupKey;
+        lastPushMs = now;
+
+        Log.d(TAG, "appPush: 开始 - 类型:" + type + ", 金额:" + priceStr);
+
+        final String t = String.valueOf(new Date().getTime());
+        final String sign = md5(type + priceStr + t + key);
+        final String url = buildPushUrl(host, type, priceStr, t, sign);
+        Log.d(TAG, "appPush: URL:" + url);
+
+        if (okHttpClient == null) {
+            okHttpClient = new OkHttpClient.Builder()
+                    .connectTimeout(10, TimeUnit.SECONDS)
+                    .readTimeout(30, TimeUnit.SECONDS)
+                    .build();
+        }
+
+        Request request = new Request.Builder().url(url).method("GET", null).build();
+        okHttpClient.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                String error = e.getMessage();
+                Log.e(TAG, "appPush: 请求失败 - " + error);
+                sendMonitorLogs(timeStamp() + "\r\r\r\r" + "通知回调失败：" + error);
+                scheduleRetryCallback(type, price, priceStr);
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                try {
+                    String str = response.body().string();
+                    JSONObject result = new JSONObject(str);
+                    String msg = result.getString("msg");
+                    logPushResult(type, priceStr, msg, str, false);
+                    if ("成功".equals(msg)) {
+                        cancelNotification(type);
+                    }
+                } catch (Exception e) {
+                    String error = e.getMessage();
+                    Log.e(TAG, "appPush: 响应解析失败 - " + error);
+                    sendMonitorLogs(timeStamp() + "\r\r\r\r" + "通知回调失败：" + error);
+                    scheduleRetryCallback(type, price, priceStr);
+                }
+            }
+        });
+    }
+
+    /** 清除对应支付应用的通知，防止通知栏堆积 */
+    private void cancelNotification(int type) {
+        try {
+            StatusBarNotification[] activeNotifications = getActiveNotifications();
+            if (activeNotifications == null || activeNotifications.length == 0) {
+                return;
+            }
+            String targetPackage = (type == AppConstants.PAY_TYPE_WECHAT) ? PACKAGE_WECHAT : PACKAGE_ALIPAY;
+            for (StatusBarNotification sbn : activeNotifications) {
+                if (sbn != null && targetPackage.equals(sbn.getPackageName())) {
+                    cancelNotification(sbn.getKey());
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "cancelNotification 失败 - " + e.getMessage());
+        }
+    }
+
+    private String buildPushUrl(String host, int type, String priceStr, String t, String sign) {
+        return "http://" + host + "/appPush?t=" + t + "&type=" + type + "&price=" + priceStr + "&sign=" + sign;
+    }
+
+    private void logPushResult(int type, String priceStr, String msg, String data, boolean isRetry) {
+        String prefix = isRetry ? "自动补回调：" : "";
+        String payType = (type == AppConstants.PAY_TYPE_WECHAT) ? "微信支付" : "支付宝";
+        String logContent = timeStamp() + "\r\r\r\r"
+                + prefix + "监听到" + payType + "收款" + priceStr + "元"
+                + "\t通知回调状态：" + msg
+                + "\n通知回调信息：" + data;
+        sendMonitorLogs(logContent);
+    }
+
+    /** 推送失败后延迟 1 秒自动补回调 */
+    private void scheduleRetryCallback(final int type, final double price, final String priceStr) {
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String t = String.valueOf(new Date().getTime());
+                    String sign = md5(type + priceStr + t + key);
+                    String url = buildPushUrl(host, type, priceStr, t, sign);
+                    String data = getHtml(url);
+                    JSONObject jsonObject = new JSONObject(data);
+                    int code = jsonObject.getInt("code");
+                    String message = jsonObject.getString("msg");
+                    if (code == 1 && "成功".equals(message)) {
+                        logPushResult(type, priceStr, message, data, true);
+                        toast("补通知回调成功：" + data);
+                    } else {
+                        Log.w(TAG, "补回调失败 - code:" + code + ", msg:" + message);
+                    }
+                } catch (Exception e) {
+                    String error = e.getMessage();
+                    Log.e(TAG, "补回调异常 - " + error);
+                    toast("自动补单回调失败！错误详情：" + error);
+                }
+            }
+        }, AppConstants.CALLBACK_RETRY_DELAY);
+    }
+
+    // ==================== 金额解析 ====================
+
+    /**
+     * 从文本中提取金额：先定位关键词（收款/付款/到账/转入），
+     * 再正则匹配数字，做合法性与金额范围（0.01 ~ 999999.99）校验。
+     */
+    public static String getMoney(String content) {
+        if (content == null || content.isEmpty()) return null;
+
+        int startIndex = -1;
+        String[] keywords = {"收款", "付款", "到账", "转入"};
+        for (String keyword : keywords) {
+            int index = content.indexOf(keyword);
+            if (index >= 0) {
+                startIndex = index;
+                break;
+            }
+        }
+        String searchText = (startIndex >= 0) ? content.substring(startIndex) : content;
+
+        List<String> validAmounts = new ArrayList<>();
+        Matcher matcher = MONEY_PATTERN.matcher(searchText);
+        while (matcher.find()) {
+            String matched = matcher.group();
+            if (isValidNumber(matched)) {
+                try {
+                    double amount = Double.parseDouble(matched);
+                    if (amount >= 0.01 && amount <= 999999.99) {
+                        validAmounts.add(matched);
+                    }
+                } catch (NumberFormatException e) {
+                    Log.w(TAG, "getMoney: 无效金额 " + matched);
+                }
+            }
+        }
+        if (!validAmounts.isEmpty()) return validAmounts.get(0);
+        return null;
+    }
+
+    private static boolean isValidNumber(String str) {
+        if (str == null || str.isEmpty()) return false;
+        int dotCount = 0;
+        for (int i = 0; i < str.length(); i++) {
+            char c = str.charAt(i);
+            if (c == '.') {
+                dotCount++;
+                if (dotCount > 1 || i == 0 || i == str.length() - 1) return false;
+            } else if (!Character.isDigit(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ==================== 监听日志 ====================
+
+    private void sendMonitorLogs(String msgStr) {
+        SharedPreferences read = getSharedPreferences(AppConstants.SP_NAME_LOGS, MODE_PRIVATE);
+        String logsStr = read.getString(AppConstants.SP_KEY_LOGS_STR, "");
+
+        int lineCount = 0;
+        int lastIndex = -1;
+        for (int i = 0; i < logsStr.length(); i++) {
+            if (logsStr.charAt(i) == '\n') {
+                lineCount++;
+                if (lineCount >= AppConstants.MAX_LOG_ENTRIES) {
+                    lastIndex = i;
+                    break;
+                }
+            }
+        }
+        if (lastIndex >= 0 && lastIndex < logsStr.length() - 1) {
+            logsStr = logsStr.substring(lastIndex + 1);
+        }
+        logsStr = msgStr + "\n" + logsStr;
+
+        SharedPreferences.Editor editor = getSharedPreferences(AppConstants.SP_NAME_LOGS, MODE_PRIVATE).edit();
+        editor.putString(AppConstants.SP_KEY_LOGS_STR, logsStr);
+        editor.commit();
+
+        if (MainActivity.monitorLogHandler != null) {
+            Message msg = new Message();
+            msg.what = 0;
+            Bundle bundle = new Bundle();
+            bundle.putString(AppConstants.SP_KEY_LOGS_STR, logsStr);
+            msg.setData(bundle);
+            MainActivity.monitorLogHandler.sendMessage(msg);
+        }
+    }
+
+    private static String timeStamp() {
+        return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(new Date());
+    }
+
+    // ==================== 生命周期 ====================
+
+    @Override
+    public void onListenerConnected() {
+        if (mainHandler == null) {
+            mainHandler = new Handler(Looper.getMainLooper());
+        }
+        initAppHeart();
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                sendMonitorLogs(timeStamp() + "\r\r\r\r" + "监听服务开启成功！");
+            }
+        }, 1000);
+    }
+
+    // ==================== 工具 ====================
+
     private void toast(final String msg) {
-        Handler h = new Handler(Looper.getMainLooper());
-        h.post(new Runnable() {
+        if (mainHandler == null) {
+            mainHandler = new Handler(Looper.getMainLooper());
+        }
+        mainHandler.post(new Runnable() {
             public void run() {
                 Toast.makeText(getApplicationContext(), msg, Toast.LENGTH_SHORT).show();
             }
@@ -221,91 +580,57 @@ public class NeNotificationService2 extends NotificationListenerService {
         return false;
     }
 
-    public void appPush(int type, double price) {
-        SharedPreferences read = getSharedPreferences("vone", MODE_PRIVATE);
-        host = read.getString("host", "");
-        key = read.getString("key", "");
-
-        // 去重：同一 (type, 金额) 15 秒内只推一次
-        String dedupKey = type + ":" + price;
-        long now = System.currentTimeMillis();
-        if (dedupKey.equals(lastPushKey) && (now - lastPushMs) < 15000) {
-            Log.d(TAG, "去重：跳过重复推送 " + dedupKey);
-            return;
-        }
-        lastPushKey = dedupKey;
-        lastPushMs = now;
-
-        Log.d(TAG, "onResponse  push: 开始:" + type + "  " + price);
-        String t = String.valueOf(new Date().getTime());
-        String sign = md5(type + "" + price + t + key);
-        String url = "http://" + host + "/appPush?t=" + t + "&type=" + type + "&price=" + price + "&sign=" + sign;
-        Log.d(TAG, "onResponse  push: 开始:" + url);
-
-        OkHttpClient okHttpClient = new OkHttpClient();
-        Request request = new Request.Builder().url(url).method("GET", null).build();
-        Call call = okHttpClient.newCall(request);
-        call.enqueue(new Callback() {
-            @Override
-            public void onFailure(Call call, IOException e) {
-                Log.d(TAG, "onResponse  push: 请求失败");
-            }
-
-            @Override
-            public void onResponse(Call call, Response response) throws IOException {
-                Log.d(TAG, "onResponse  push: " + response.body().string());
-            }
-        });
-    }
-
-    /**
-     * 提取金额：优先取 ￥/¥/元 附近的数字；回退取最后一个数字串。
-     * 返回统一 2 位小数字符串，取不到返回 null。
-     */
-    public static String getMoney(String content, String title) {
-        String s = ((title == null ? "" : title) + " " + (content == null ? "" : content)).replace("，", ",").replace("￥", "¥");
-        // 1) 优先：¥ 后 或 数字+元 前
-        Matcher m = Pattern.compile("¥\\s*([0-9]+(?:\\.[0-9]{1,2})?)|([0-9]+(?:\\.[0-9]{1,2})?)\\s*元").matcher(s);
-        String best = null;
-        while (m.find()) {
-            best = (m.group(1) != null) ? m.group(1) : m.group(2);
-        }
-        if (best != null) return normalize(best);
-        // 2) 回退：取最后一个数字串
-        List<String> ss = new ArrayList<String>();
-        for (String sss : s.replaceAll("[^0-9.]", ",").split(",")) {
-            if (sss.length() > 0) ss.add(sss);
-        }
-        if (ss.size() < 1) return null;
-        return normalize(ss.get(ss.size() - 1));
-    }
-
-    private static String normalize(String num) {
+    public String getHtml(String path) throws Exception {
+        HttpURLConnection conn = null;
+        InputStream inStream = null;
         try {
-            double d = Double.parseDouble(num);
-            return String.format(java.util.Locale.US, "%.2f", d);
-        } catch (Exception e) {
-            return null;
+            URL url = new URL(path);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(8 * 1000);
+            inStream = conn.getInputStream();
+            byte[] data = readInputStream(inStream);
+            return new String(data, StandardCharsets.UTF_8);
+        } finally {
+            if (inStream != null) {
+                try {
+                    inStream.close();
+                } catch (IOException e) {
+                    Log.e(TAG, "关闭输入流失败", e);
+                }
+            }
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
+    }
+
+    public byte[] readInputStream(InputStream inStream) throws Exception {
+        ByteArrayOutputStream outStream = new ByteArrayOutputStream();
+        byte[] buffer = new byte[1024];
+        int len;
+        while ((len = inStream.read(buffer)) != -1) {
+            outStream.write(buffer, 0, len);
+        }
+        return outStream.toByteArray();
     }
 
     public static String md5(String string) {
         if (TextUtils.isEmpty(string)) {
             return "";
         }
-        MessageDigest md5 = null;
         try {
-            md5 = MessageDigest.getInstance("MD5");
+            MessageDigest md5 = MessageDigest.getInstance("MD5");
             byte[] bytes = md5.digest(string.getBytes());
-            String result = "";
+            StringBuilder result = new StringBuilder();
             for (byte b : bytes) {
                 String temp = Integer.toHexString(b & 0xff);
                 if (temp.length() == 1) {
                     temp = "0" + temp;
                 }
-                result += temp;
+                result.append(temp);
             }
-            return result;
+            return result.toString();
         } catch (NoSuchAlgorithmException e) {
             e.printStackTrace();
         }

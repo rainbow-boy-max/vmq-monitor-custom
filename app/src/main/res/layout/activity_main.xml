@@ -1,76 +1,98 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    tools:context="com.vone.vmq.MainActivity"
+    tools:context="com.vone.vmq.MainActivity">
 
-    >
-
-    <include layout="@layout/toolbar_main" />
-
-    <TextView
-        android:paddingTop="20dp"
-        android:paddingBottom="10dp"
-
-        android:id="@+id/txt_host"
-        android:layout_width="fill_parent"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:orientation="vertical">
 
-        android:baselineAligned="false"
-        android:text=" 通知地址：请扫码配置" />
+        <include layout="@layout/toolbar_main" />
 
-    <TextView
-        android:paddingBottom="20dp"
-        android:id="@+id/txt_key"
-        android:layout_width="fill_parent"
-        android:layout_height="wrap_content"
-        android:text=" 通讯密钥：请扫码配置" />
+        <TextView
+            android:id="@+id/txt_host"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="20dp"
+            android:paddingBottom="10dp"
+            android:text=" 通知地址：请扫码配置" />
 
+        <TextView
+            android:id="@+id/txt_key"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="20dp"
+            android:text=" 通讯密钥：请扫码配置" />
 
-    <Button
-        android:id="@+id/btn_qrcode"
-        android:layout_width="fill_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:onClick="startQrCode"
-        android:text="扫码配置" />
-    <Button
-        android:id="@+id/btn_input"
-        android:layout_width="fill_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:onClick="doInput"
-        android:text="手动配置" />
-    <Button
-        android:id="@+id/btn_notify"
-        android:layout_width="fill_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:onClick="openNotifyAccess"
-        android:text="开启通知使用权" />
-    <Button
-        android:id="@+id/btn_appperm"
-        android:layout_width="fill_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:onClick="openAppSettings"
-        android:text="应用权限设置" />
-    <Button
-        android:id="@+id/btn_start"
-        android:layout_width="fill_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:onClick="doStart"
-        android:text="检测心跳" />
-    <Button
-        android:id="@+id/btn_checkpush"
-        android:layout_width="fill_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:onClick="checkPush"
-        android:text="检测监听" />
+        <Button
+            android:id="@+id/btn_qrcode"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:onClick="startQrCode"
+            android:text="扫码配置" />
 
-</LinearLayout>
+        <Button
+            android:id="@+id/btn_input"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:onClick="doInput"
+            android:text="手动配置" />
+
+        <Button
+            android:id="@+id/btn_notify"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:onClick="openNotifyAccess"
+            android:text="开启通知使用权" />
+
+        <Button
+            android:id="@+id/btn_appperm"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:onClick="openAppSettings"
+            android:text="应用权限设置" />
+
+        <Button
+            android:id="@+id/btn_alive"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:onClick="openKeepAlive"
+            android:text="一键保活（电池白名单/自启动）" />
+
+        <Button
+            android:id="@+id/btn_start"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:onClick="doStart"
+            android:text="检测心跳" />
+
+        <Button
+            android:id="@+id/btn_checkpush"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:onClick="checkPush"
+            android:text="检测监听" />
+
+        <TextView
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:text="监听日志（最近 20 条）：" />
+
+        <TextView
+            android:id="@+id/txt_logs"
+            android:layout_width="fill_parent"
+            android:layout_height="240dp"
+            android:layout_marginBottom="16dp"
+            android:background="#11000000"
+            android:padding="8dp"
+            android:scrollbars="vertical"
+            android:textIsSelectable="true"
+            android:textSize="12sp" />
+
+    </LinearLayout>
+
+</ScrollView>

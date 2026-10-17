@@ -8,8 +8,8 @@ android {
         applicationId "com.vone.qrcode"
         minSdk 19
         targetSdk 34
-        versionCode 4
-        versionName "1.3-custom"
+        versionCode 5
+        versionName "2.0-custom"
     }
 
     signingConfigs {
